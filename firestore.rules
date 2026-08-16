@@ -1,0 +1,25 @@
+rules_version = '2';
+
+// IMPORTANTE — LEE ESTO:
+// Esta app maneja sus propios usuarios (Excelencia Operacional / gerentes) dentro del
+// código de React, NO usa Firebase Authentication. Por lo tanto, Firestore no tiene
+// forma de verificar del lado del servidor quién es "master" y quién no: el control de
+// permisos (quién puede editar qué) ocurre solo en el navegador (cliente).
+//
+// Estas reglas dejan la colección "app_data" abierta a lectura y escritura para
+// cualquiera que tenga la URL del proyecto de Firestore, replicando el mismo nivel de
+// protección que ya tenía la app dentro de Claude.ai (control de acceso simple, no
+// autenticación de nivel productivo). Alguien con conocimientos técnicos podría escribir
+// datos directamente saltándose la interfaz.
+//
+// Si más adelante quieres protección real, lo recomendable es migrar el login a
+// Firebase Authentication (Email/Password) y condicionar estas reglas a
+// request.auth != null.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /app_data/{document} {
+      allow read, write: if true;
+    }
+  }
+}

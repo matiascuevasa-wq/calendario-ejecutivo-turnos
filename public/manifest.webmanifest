@@ -1,0 +1,16 @@
+{
+  "name": "Calendario de Turnos - Excelencia Operacional",
+  "short_name": "Turnos OEMS",
+  "description": "Calendario semanal, ejecutivos de turno y sorteo de fines de semana.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#1B2733",
+  "theme_color": "#1B2733",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
