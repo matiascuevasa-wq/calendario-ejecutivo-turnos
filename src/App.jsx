@@ -91,6 +91,68 @@ function weekendsOfYear(year) {
 }
 function uid() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4); }
 
+/* ---- recurrencia de actividades (similar a Outlook) ---- */
+const WEEKDAY_NAMES = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+const NTH_NAMES = { 1: "primer", 2: "segundo", 3: "tercer", 4: "cuarto", 5: "último" };
+
+function nthWeekdayOfMonth(d) {
+  const n = Math.ceil(d.getDate() / 7);
+  const next = addDays(d, 7);
+  if (next.getMonth() !== d.getMonth()) return 5; // es el último de ese día en el mes
+  return n;
+}
+function seriesMatchesDate(series, dateStr) {
+  const r = series.recurrence;
+  if (!r) return false;
+  const d = parseDate(dateStr);
+  const start = parseDate(series.date);
+  if (d < start) return false;
+  if (r.until && dateStr > r.until) return false;
+  if (r.freq === "weekly") return d.getDay() === r.weekday;
+  if (r.freq === "monthly") {
+    if (d.getDay() !== r.weekday) return false;
+    const n = nthWeekdayOfMonth(d);
+    if (r.nth === 5) return n === 5;
+    return n === r.nth;
+  }
+  return false;
+}
+function describeRecurrence(recurrence) {
+  if (!recurrence) return "No se repite";
+  const day = WEEKDAY_NAMES[recurrence.weekday];
+  if (recurrence.freq === "weekly") return `Cada ${day}`;
+  if (recurrence.freq === "monthly") return `El ${NTH_NAMES[recurrence.nth]} ${day} de cada mes`;
+  return "No se repite";
+}
+// Expande actividades (simples + series recurrentes con excepciones) para un set de fechas visibles
+function expandOccurrences(activities, dateStrs) {
+  const dateSet = new Set(dateStrs);
+  const result = [];
+  activities.forEach(act => {
+    if (!act.recurrence) {
+      if (dateSet.has(act.date)) result.push({ ...act, occurrenceDate: act.date, originalDate: act.date, seriesId: act.id, isRecurring: false });
+      return;
+    }
+    const exceptions = act.exceptions || {};
+    dateStrs.forEach(dateStr => {
+      if (!seriesMatchesDate(act, dateStr)) return;
+      const exc = exceptions[dateStr];
+      if (exc && exc.cancelled) return;
+      if (exc && exc.override && exc.override.date && exc.override.date !== dateStr) return; // se movió a otra fecha
+      const base = exc && exc.override ? { ...act, ...exc.override } : act;
+      result.push({ ...base, id: act.id, occurrenceDate: exc?.override?.date || dateStr, originalDate: dateStr, seriesId: act.id, isRecurring: true });
+    });
+    // ocurrencias reprogramadas que "entran" a este rango desde otra fecha original
+    Object.entries(exceptions).forEach(([origDate, exc]) => {
+      if (exc.override && exc.override.date && dateSet.has(exc.override.date) && exc.override.date !== origDate) {
+        result.push({ ...act, ...exc.override, id: act.id, occurrenceDate: exc.override.date, originalDate: origDate, seriesId: act.id, isRecurring: true });
+      }
+    });
+  });
+  return result;
+}
+
+
 /* ------------------------------------------------------------------ */
 /* STORAGE HELPERS                                                     */
 /* ------------------------------------------------------------------ */
@@ -146,6 +208,7 @@ export default function App() {
 
   const [showLogin, setShowLogin] = useState(false);
   const [showActivityModal, setShowActivityModal] = useState(null); // {mode, activity, date}
+  const [showEditChoice, setShowEditChoice] = useState(null); // {occurrence, action}
   const [showExecModal, setShowExecModal] = useState(null);
   const [showAccountModal, setShowAccountModal] = useState(null);
   const [showCategoryModal, setShowCategoryModal] = useState(null);
@@ -216,6 +279,14 @@ export default function App() {
     setGerencias(next); await saveKey(STORAGE_KEYS.gerencias, next);
     pushAudit("Gerencia creada", clean);
   }
+  async function deleteGerencia(name) {
+    const nextG = gerencias.filter(g => g !== name);
+    const nextE = executives.filter(e => e.gerencia !== name);
+    setGerencias(nextG); await saveKey(STORAGE_KEYS.gerencias, nextG);
+    setExecutives(nextE); await saveKey(STORAGE_KEYS.executives, nextE);
+    pushAudit("Gerencia eliminada", name);
+    setConfirmDialog(null);
+  }
 
   /* ---------------- categorías de actividad ---------------- */
   async function saveCategory(cat) {
@@ -272,16 +343,45 @@ export default function App() {
   /* ---------------- actividades ---------------- */
   async function saveActivity(act) {
     let next;
-    if (act.id) next = activities.map(a => a.id === act.id ? act : a);
-    else next = [...activities, { ...act, id: uid(), createdBy: session.username }];
+    if (act.id) next = activities.map(a => a.id === act.id ? { ...a, ...act } : a);
+    else next = [...activities, { ...act, id: uid(), createdBy: session.username, exceptions: {} }];
     setActivities(next); await saveKey(STORAGE_KEYS.activities, next);
-    pushAudit(act.id ? "Actividad editada" : "Actividad agregada", `${act.title} — ${act.date} ${act.start}-${act.end}`);
+    pushAudit(act.id ? "Actividad/serie editada" : "Actividad agregada", `${act.title} — ${act.date} ${act.start}-${act.end}${act.recurrence ? ` (${describeRecurrence(act.recurrence)})` : ""}`);
     setShowActivityModal(null);
   }
+  async function deleteActivitySeries(act) {
+    const next = activities.filter(a => a.id !== act.seriesId);
+    setActivities(next); await saveKey(STORAGE_KEYS.activities, next);
+    pushAudit("Serie eliminada", `${act.title} (todas las ocurrencias)`);
+    setConfirmDialog(null);
+  }
   async function deleteActivity(act) {
+    if (act.isRecurring) return deleteActivitySeries(act);
     const next = activities.filter(a => a.id !== act.id);
     setActivities(next); await saveKey(STORAGE_KEYS.activities, next);
     pushAudit("Actividad eliminada", `${act.title} — ${act.date}`);
+    setConfirmDialog(null);
+  }
+  async function saveOccurrenceOverride(occurrence, fields) {
+    const next = activities.map(a => {
+      if (a.id !== occurrence.seriesId) return a;
+      const exceptions = { ...(a.exceptions || {}) };
+      exceptions[occurrence.originalDate] = { override: fields };
+      return { ...a, exceptions };
+    });
+    setActivities(next); await saveKey(STORAGE_KEYS.activities, next);
+    pushAudit("Ocurrencia modificada", `${fields.title} — ${occurrence.originalDate} → ${fields.date}`);
+    setShowActivityModal(null);
+  }
+  async function cancelOccurrence(occurrence) {
+    const next = activities.map(a => {
+      if (a.id !== occurrence.seriesId) return a;
+      const exceptions = { ...(a.exceptions || {}) };
+      exceptions[occurrence.originalDate] = { cancelled: true };
+      return { ...a, exceptions };
+    });
+    setActivities(next); await saveKey(STORAGE_KEYS.activities, next);
+    pushAudit("Ocurrencia eliminada", `${occurrence.title} — ${occurrence.originalDate}`);
     setConfirmDialog(null);
   }
 
@@ -336,6 +436,22 @@ export default function App() {
     setShiftDraws(next); await saveKey(STORAGE_KEYS.shiftDraws, next);
     pushAudit("Sorteo validado", `Año ${sorteoDraft.year} — ${validated.length} fines de semana`);
     setSorteoDraft(null);
+  }
+  async function manualSetShift(year, weekend, executiveId) {
+    const current = shiftDraws[year] || [];
+    let nextYear;
+    if (!executiveId) {
+      nextYear = current.filter(d => d.thu !== weekend.thu);
+    } else {
+      const idx = current.findIndex(d => d.thu === weekend.thu);
+      const entry = { id: idx >= 0 ? current[idx].id : uid(), thu: weekend.thu, fri: weekend.fri, sat: weekend.sat, sun: weekend.sun, executiveId, status: "validated" };
+      if (idx >= 0) { nextYear = [...current]; nextYear[idx] = entry; }
+      else nextYear = [...current, entry].sort((a, b) => a.thu.localeCompare(b.thu));
+    }
+    const next = { ...shiftDraws, [year]: nextYear };
+    setShiftDraws(next); await saveKey(STORAGE_KEYS.shiftDraws, next);
+    const execName = executiveId ? (executives.find(e => e.id === executiveId)?.name || executiveId) : "sin asignar";
+    pushAudit("Turno asignado manualmente", `${weekend.thu} (${year}) → ${execName}`);
   }
 
   /* ---------------- semana visible ---------------- */
@@ -405,12 +521,18 @@ export default function App() {
             executives={executives}
             canEditGerencia={canEditGerencia}
             onAddActivity={(date, start) => setShowActivityModal({ mode: "add", date, start })}
-            onEditActivity={(act) => setShowActivityModal({ mode: "edit", activity: act })}
-            onDeleteActivity={(act) => setConfirmDialog({
-              title: "Eliminar actividad",
-              message: `¿Eliminar "${act.title}" del ${act.date}?`,
-              onConfirm: () => deleteActivity(act)
-            })}
+            onEditActivity={(occ) => {
+              if (occ.isRecurring) setShowEditChoice({ occurrence: occ, action: "edit" });
+              else setShowActivityModal({ mode: "edit", activity: occ });
+            }}
+            onDeleteActivity={(occ) => {
+              if (occ.isRecurring) setShowEditChoice({ occurrence: occ, action: "delete" });
+              else setConfirmDialog({
+                title: "Eliminar actividad",
+                message: `¿Eliminar "${occ.title}" del ${occ.date}?`,
+                onConfirm: () => deleteActivity(occ)
+              });
+            }}
             thisYear={thisYear}
           />
         )}
@@ -428,6 +550,16 @@ export default function App() {
               onConfirm: () => deleteExecutive(e)
             })}
             onAddGerencia={addGerencia}
+            onDeleteGerencia={(g) => {
+              const count = executives.filter(e => e.gerencia === g).length;
+              setConfirmDialog({
+                title: "Eliminar gerencia",
+                message: count > 0
+                  ? `¿Eliminar "${g}"? Se eliminarán también los ${count} ejecutivo(s) de turno asociados a esta gerencia. Las actividades ya cargadas en el calendario con esta gerencia no se borran, pero quedarán con una gerencia que ya no existe.`
+                  : `¿Eliminar la gerencia "${g}"?`,
+                onConfirm: () => deleteGerencia(g)
+              });
+            }}
           />
         )}
 
@@ -447,6 +579,7 @@ export default function App() {
               onConfirm: validateDraft
             })}
             onDiscard={() => setSorteoDraft(null)}
+            onManualAssign={manualSetShift}
           />
         )}
 
@@ -489,6 +622,44 @@ export default function App() {
           session={session}
           onClose={() => setShowActivityModal(null)}
           onSave={saveActivity}
+          onSaveOccurrence={saveOccurrenceOverride}
+        />
+      )}
+
+      {showEditChoice && (
+        <EditChoiceModal
+          occurrence={showEditChoice.occurrence}
+          action={showEditChoice.action}
+          onClose={() => setShowEditChoice(null)}
+          onChooseOccurrence={() => {
+            const occ = showEditChoice.occurrence;
+            const action = showEditChoice.action;
+            setShowEditChoice(null);
+            if (action === "edit") {
+              setShowActivityModal({ mode: "edit-occurrence", occurrence: occ });
+            } else {
+              setConfirmDialog({
+                title: "Eliminar esta actividad",
+                message: `¿Eliminar solo la actividad del ${occ.occurrenceDate}? Las demás fechas de la serie no se ven afectadas.`,
+                onConfirm: () => cancelOccurrence(occ)
+              });
+            }
+          }}
+          onChooseSeries={() => {
+            const occ = showEditChoice.occurrence;
+            const action = showEditChoice.action;
+            const seriesRoot = activities.find(a => a.id === occ.seriesId);
+            setShowEditChoice(null);
+            if (action === "edit") {
+              setShowActivityModal({ mode: "edit", activity: seriesRoot });
+            } else {
+              setConfirmDialog({
+                title: "Eliminar toda la serie",
+                message: `¿Eliminar "${occ.title}" y TODAS sus repeticiones (${describeRecurrence(occ.recurrence)})? Esta acción no se puede deshacer.`,
+                onConfirm: () => deleteActivitySeries(occ)
+              });
+            }
+          }}
         />
       )}
 
@@ -586,6 +757,8 @@ function CalendarView({
   weekDays, currentWeekStart, setCurrentWeekStart, canGoPrev, canGoNext, yearMinMonday, yearMaxMonday,
   activities, gerencias, categories, session, isStaff, turnoForDate, executives, canEditGerencia, onAddActivity, onEditActivity, onDeleteActivity, thisYear
 }) {
+  const weekDateStrs = useMemo(() => weekDays.map(fmtDate), [weekDays]);
+  const occurrences = useMemo(() => expandOccurrences(activities, weekDateStrs), [activities, weekDateStrs]);
   const slots = timeSlots();
   const weekNum = isoWeekNumber(weekDays[0]);
   const monday = weekDays[0], sunday = weekDays[6];
@@ -683,7 +856,7 @@ function CalendarView({
           </div>
           {weekDays.map((d, colIdx) => {
             const dateStr = fmtDate(d);
-            const dayActs = activities.filter(a => a.date === dateStr);
+            const dayActs = occurrences.filter(a => a.occurrenceDate === dateStr);
             return (
               <div key={colIdx} className="relative border-r border-[#E3E7E5] last:border-r-0" style={{ height: slots.length * ROW_H }}>
                 {slots.map((t, i) => (
@@ -704,13 +877,16 @@ function CalendarView({
                   const editable = canEditGerencia(act.gerencia);
                   return (
                     <div
-                      key={act.id}
+                      key={act.seriesId + "-" + act.occurrenceDate}
                       onClick={(e) => { e.stopPropagation(); if (editable) onEditActivity(act); }}
                       className={`absolute left-0.5 right-0.5 rounded-[4px] px-1.5 py-0.5 overflow-hidden ${editable ? "cursor-pointer" : ""}`}
                       style={{ top, height, backgroundColor: color + "1F", borderLeft: `3px solid ${color}` }}
-                      title={`${act.title} · ${act.start}-${act.end} · ${act.gerencia}${cat ? " · " + cat.name : ""}`}
+                      title={`${act.title} · ${act.start}-${act.end} · ${act.gerencia}${cat ? " · " + cat.name : ""}${act.isRecurring ? " · " + describeRecurrence(act.recurrence) : ""}`}
                     >
-                      <div className="text-[10.5px] font-semibold leading-tight truncate" style={{ color }}>{act.title}</div>
+                      <div className="text-[10.5px] font-semibold leading-tight truncate flex items-center gap-1" style={{ color }}>
+                        {act.isRecurring && <RefreshCw size={9} className="shrink-0" />}
+                        {act.title}
+                      </div>
                       <div className="text-[9px] text-[#5B6B76] leading-tight font-mono2 truncate">{act.start}–{act.end} · {act.gerencia}</div>
                     </div>
                   );
@@ -728,7 +904,7 @@ function CalendarView({
 /* VISTA EJECUTIVOS                                                     */
 /* ------------------------------------------------------------------ */
 
-function ExecutivosView({ executives, gerencias, session, isStaff, canEditGerencia, onAdd, onEdit, onDelete, onAddGerencia, onBulkImport }) {
+function ExecutivosView({ executives, gerencias, session, isStaff, canEditGerencia, onAdd, onEdit, onDelete, onAddGerencia, onDeleteGerencia, onBulkImport }) {
   const [newGerencia, setNewGerencia] = useState("");
   const [importMsg, setImportMsg] = useState(null);
   const [importing, setImporting] = useState(false);
@@ -858,7 +1034,14 @@ function ExecutivosView({ executives, gerencias, session, isStaff, canEditGerenc
             <div key={g} className="bg-white border border-[#E3E7E5] rounded-lg overflow-hidden">
               <div className="px-4 py-2.5 border-b border-[#E3E7E5] flex items-center justify-between" style={{ backgroundColor: color + "12" }}>
                 <span className="font-medium text-[13px]" style={{ color }}>{g}</span>
-                <span className="text-[11px] font-mono2 text-[#5B6B76]">{list.length} ejecutivo{list.length !== 1 ? "s" : ""}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-mono2 text-[#5B6B76]">{list.length} ejecutivo{list.length !== 1 ? "s" : ""}</span>
+                  {isMaster && (
+                    <button onClick={() => onDeleteGerencia(g)} title="Eliminar gerencia" className="p-1 rounded hover:bg-white/60 text-[#5B6B76] hover:text-[#C1443B]">
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="divide-y divide-[#F0F2F1]">
                 {list.length === 0 && <div className="px-4 py-3 text-[12px] text-[#9AA8AF]">Sin ejecutivos cargados.</div>}
@@ -886,10 +1069,11 @@ function ExecutivosView({ executives, gerencias, session, isStaff, canEditGerenc
 /* VISTA SORTEO                                                         */
 /* ------------------------------------------------------------------ */
 
-function SorteoView({ session, executives, gerencias, sorteoYear, setSorteoYear, sorteoDraft, shiftDraws, onGenerate, onReroll, onValidate, onDiscard }) {
+function SorteoView({ session, executives, gerencias, sorteoYear, setSorteoYear, sorteoDraft, shiftDraws, onGenerate, onReroll, onValidate, onDiscard, onManualAssign }) {
   const isMaster = session && session.role === "master";
   const validated = shiftDraws[sorteoYear] || [];
-  const yearsAvailable = [new Date().getFullYear(), new Date().getFullYear() + 1];
+  const thisYr = new Date().getFullYear();
+  const yearsAvailable = Array.from({ length: 7 }, (_, i) => thisYr - 1 + i);
 
   function nameFor(id) { return executives.find(e => e.id === id); }
 
@@ -941,15 +1125,65 @@ function SorteoView({ session, executives, gerencias, sorteoYear, setSorteoYear,
 
       <div className="bg-white border border-[#E3E7E5] rounded-lg overflow-hidden">
         <div className="px-4 py-2.5 border-b border-[#E3E7E5] flex items-center justify-between">
-          <span className="text-[13px] font-semibold text-[#1B2733]">Turnos validados — {sorteoYear}</span>
-          <span className="text-[11px] font-mono2 text-[#5B6B76]">{validated.length} fines de semana</span>
+          <span className="text-[13px] font-semibold text-[#1B2733]">Turnos de fin de semana — {sorteoYear}</span>
+          <span className="text-[11px] font-mono2 text-[#5B6B76]">{validated.length}/{weekendsOfYear(sorteoYear).length} asignados</span>
         </div>
-        {validated.length === 0 ? (
-          <div className="px-4 py-6 text-[12px] text-[#9AA8AF] text-center">Aún no hay un sorteo validado para {sorteoYear}.</div>
-        ) : (
-          <DrawTable draws={validated} executives={executives} gerencias={gerencias} />
+        {isMaster && (
+          <div className="px-4 py-2 text-[11px] text-[#5B6B76] border-b border-[#F0F2F1] bg-[#FAFBFA]">
+            Puedes asignar cada fin de semana manualmente desde el selector de la tabla, o usar "Generar sorteo" arriba para asignarlos aleatoriamente.
+          </div>
         )}
+        <ValidatedShiftsTable year={sorteoYear} validated={validated} executives={executives} gerencias={gerencias} isMaster={isMaster} onManualAssign={onManualAssign} />
       </div>
+    </div>
+  );
+}
+
+function ValidatedShiftsTable({ year, validated, executives, gerencias, isMaster, onManualAssign }) {
+  const weekends = weekendsOfYear(year);
+  const byThu = {};
+  validated.forEach(d => { byThu[d.thu] = d; });
+  return (
+    <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
+      <table className="w-full text-[13px]">
+        <thead>
+          <tr className="text-left text-[11px] text-[#8CA0AC] border-b border-[#EEF1F0] sticky top-0 bg-white">
+            <th className="px-4 py-2 font-medium">Fin de semana</th>
+            <th className="px-4 py-2 font-medium">Ejecutivo asignado</th>
+            <th className="px-4 py-2 font-medium">Gerencia</th>
+          </tr>
+        </thead>
+        <tbody>
+          {weekends.map(w => {
+            const d = byThu[w.thu];
+            const exec = d ? executives.find(e => e.id === d.executiveId) : null;
+            const color = exec ? gerenciaColor(exec.gerencia, gerencias) : "#9AA8AF";
+            const thu = parseDate(w.thu);
+            return (
+              <tr key={w.thu} className="border-b border-[#F5F6F5] last:border-b-0">
+                <td className="px-4 py-2 font-mono2 text-[12px] text-[#5B6B76] whitespace-nowrap">{thu.getDate()} {MONTHS[thu.getMonth()].slice(0, 3)} – {parseDate(w.sun).getDate()} {MONTHS[parseDate(w.sun).getMonth()].slice(0, 3)}</td>
+                <td className="px-4 py-2">
+                  {isMaster ? (
+                    <select
+                      value={d ? d.executiveId : ""}
+                      onChange={e => onManualAssign(year, w, e.target.value || null)}
+                      className="text-[12px] border border-[#D8DEE1] rounded-md px-2 py-1.5 bg-white w-full max-w-[280px]"
+                    >
+                      <option value="">Sin asignar</option>
+                      {executives.map(ex => <option key={ex.id} value={ex.id}>{ex.name} — {ex.gerencia}</option>)}
+                    </select>
+                  ) : (
+                    <span className="font-medium">{exec ? exec.name : "Sin asignar"}</span>
+                  )}
+                </td>
+                <td className="px-4 py-2">
+                  {exec ? <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: color + "1A", color }}>{exec.gerencia}</span> : <span className="text-[11px] text-[#9AA8AF]">—</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1141,7 +1375,7 @@ function AdminView({ session, accounts, gerencias, auditLog, categories, onAddAc
       {isMaster && (
         <div className="bg-white border border-[#E3E7E5] rounded-lg overflow-hidden mb-6">
           <div className="px-4 py-2.5 border-b border-[#E3E7E5] flex items-center justify-between">
-            <span className="text-[13px] font-semibold flex items-center gap-1.5"><KeyRound size={14} /> Cuentas de gerentes</span>
+            <span className="text-[13px] font-semibold flex items-center gap-1.5"><KeyRound size={14} /> Cuentas Comité Ejecutivo</span>
             <button onClick={onAddAccount} className="flex items-center gap-1.5 text-[12px] font-medium text-white bg-[#2F6F5E] hover:bg-[#285F51] px-3 py-1.5 rounded-md">
               <Plus size={13} /> Crear acceso
             </button>
@@ -1175,7 +1409,7 @@ function AdminView({ session, accounts, gerencias, auditLog, categories, onAddAc
                   </td>
                 </tr>
               ))}
-              {accounts.length === 0 && <tr><td colSpan={4} className="px-4 py-4 text-center text-[12px] text-[#9AA8AF]">Aún no se han creado accesos de gerentes.</td></tr>}
+              {accounts.length === 0 && <tr><td colSpan={4} className="px-4 py-4 text-center text-[12px] text-[#9AA8AF]">Aún no se han creado accesos del Comité Ejecutivo.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -1256,7 +1490,7 @@ function LoginModal({ accounts, onClose, onSubmit, onGuestLogin }) {
             <option value="GUEST">👁 Invitado — solo visualización</option>
             <option value={MASTER_USER}>🛡 {MASTER_USER}</option>
             {grouped.length > 0 && (
-              <optgroup label="Gerentes">
+              <optgroup label="Comité Ejecutivo">
                 {grouped.map(a => <option key={a.username} value={a.username}>{a.username} — {a.gerencia}</option>)}
               </optgroup>
             )}
@@ -1280,11 +1514,14 @@ function LoginModal({ accounts, onClose, onSubmit, onGuestLogin }) {
   );
 }
 
-function ActivityModal({ data, gerencias, categories, session, onClose, onSave }) {
-  const editing = data.mode === "edit";
-  const act = editing ? data.activity : null;
+function ActivityModal({ data, gerencias, categories, session, onClose, onSave, onSaveOccurrence }) {
+  const mode = data.mode; // "add" | "edit" | "edit-occurrence"
+  const isOccurrenceMode = mode === "edit-occurrence";
+  const act = mode === "edit" ? data.activity : (isOccurrenceMode ? data.occurrence : null);
+  const editing = mode !== "add";
+
   const [title, setTitle] = useState(act?.title || "");
-  const [date, setDate] = useState(act?.date || data.date);
+  const [date, setDate] = useState((isOccurrenceMode ? act?.occurrenceDate : act?.date) || data.date);
   const [start, setStart] = useState(act?.start || data.start || "09:00");
   const [end, setEnd] = useState(act?.end || minutesToTime(timeToMinutes(data.start || "09:00") + 60));
   const [gerencia, setGerencia] = useState(act?.gerencia || (session.role === "gerente" ? session.gerencia : gerencias[0] || ""));
@@ -1293,18 +1530,41 @@ function ActivityModal({ data, gerencias, categories, session, onClose, onSave }
   const [error, setError] = useState("");
   const gerenciaLocked = session.role === "gerente";
 
+  // repetición: solo se elige/edita a nivel de "add" o "edit" de serie, no en edit-occurrence
+  const [repeatType, setRepeatType] = useState(act?.recurrence ? act.recurrence.freq : "none");
+  const [repeatUntil, setRepeatUntil] = useState(act?.recurrence?.until || "");
+
+  const refDate = date ? parseDate(date) : new Date();
+  const weekdayPreview = WEEKDAY_NAMES[refDate.getDay()];
+  const nthPreview = NTH_NAMES[nthWeekdayOfMonth(refDate)] || "último";
+
   function submit(e) {
     if (e && e.preventDefault) e.preventDefault();
     if (!title.trim()) { setError("Ingresa un título para la actividad."); return; }
     if (!gerencia) { setError("Selecciona una gerencia."); return; }
     if (!categoryId) { setError("Selecciona una clasificación."); return; }
     if (timeToMinutes(end) - timeToMinutes(start) < 30) { setError("El bloque debe durar al menos 30 minutos."); return; }
-    onSave({ id: act?.id, title: title.trim(), date, start, end, gerencia, categoryId, note: note.trim() });
+
+    if (isOccurrenceMode) {
+      onSaveOccurrence(act, { title: title.trim(), date, start, end, gerencia, categoryId, note: note.trim() });
+      return;
+    }
+
+    let recurrence = null;
+    if (repeatType === "weekly") recurrence = { freq: "weekly", weekday: refDate.getDay(), until: repeatUntil || null };
+    if (repeatType === "monthly") recurrence = { freq: "monthly", weekday: refDate.getDay(), nth: nthWeekdayOfMonth(refDate), until: repeatUntil || null };
+
+    onSave({ id: act?.id, title: title.trim(), date, start, end, gerencia, categoryId, note: note.trim(), recurrence });
   }
 
   return (
-    <ModalShell title={editing ? "Editar actividad" : "Nueva actividad"} onClose={onClose}>
+    <ModalShell title={isOccurrenceMode ? "Editar esta actividad" : editing ? "Editar actividad" : "Nueva actividad"} onClose={onClose}>
       <div onKeyDown={e => { if (e.key === "Enter") submit(e); }}>
+        {isOccurrenceMode && (
+          <div className="mb-3.5 text-[12px] text-[#8A6A2A] bg-[#FDF3E1] border border-[#F0D9A8] rounded-md px-3 py-2">
+            Estás editando solo esta fecha ({act.occurrenceDate}) de la serie "{act.title}". El resto de las repeticiones no se modifican.
+          </div>
+        )}
         <Field label="Título"><input autoFocus value={title} onChange={e => setTitle(e.target.value)} className={inputCls} placeholder="Reunión de coordinación" /></Field>
         <div className="grid grid-cols-3 gap-2">
           <Field label="Fecha"><input type="date" value={date} onChange={e => setDate(e.target.value)} className={inputCls} /></Field>
@@ -1344,11 +1604,47 @@ function ActivityModal({ data, gerencias, categories, session, onClose, onSave }
           </div>
         )}
         {categories.length === 0 && <p className="text-[12px] text-[#C1443B] mb-3">No hay clasificaciones creadas. Pídele a Excelencia Operacional que cree una en Administración.</p>}
+
+        {!isOccurrenceMode && (
+          <>
+            <Field label="Repetición">
+              <select value={repeatType} onChange={e => setRepeatType(e.target.value)} className={inputCls}>
+                <option value="none">No se repite (única vez)</option>
+                <option value="weekly">Semanalmente — cada {weekdayPreview}</option>
+                <option value="monthly">Mensualmente — el {nthPreview} {weekdayPreview} de cada mes</option>
+              </select>
+            </Field>
+            {repeatType !== "none" && (
+              <Field label="Repetir hasta (opcional)">
+                <input type="date" value={repeatUntil} onChange={e => setRepeatUntil(e.target.value)} className={inputCls} />
+                <p className="text-[11px] text-[#9AA8AF] mt-1">Si lo dejas vacío, se repite indefinidamente. Puedes editar o eliminar fechas puntuales más adelante sin afectar el resto.</p>
+              </Field>
+            )}
+          </>
+        )}
+
         <Field label="Notas (opcional)"><textarea value={note} onChange={e => setNote(e.target.value)} rows={2} className={inputCls} /></Field>
         {error && <p className="text-[12px] text-[#C1443B] mb-3">{error}</p>}
         <div className="flex gap-2 mt-4">
           <button type="button" onClick={submit} disabled={!categoryId} className="flex-1 text-[13px] font-medium text-white bg-[#2F6F5E] hover:bg-[#285F51] disabled:opacity-40 disabled:cursor-not-allowed py-2.5 rounded-md">Guardar</button>
         </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function EditChoiceModal({ occurrence, action, onClose, onChooseOccurrence, onChooseSeries }) {
+  return (
+    <ModalShell title={action === "edit" ? "Editar actividad recurrente" : "Eliminar actividad recurrente"} onClose={onClose}>
+      <p className="text-[13px] text-[#3D4C56] mb-1">"{occurrence.title}" se repite: <strong>{describeRecurrence(occurrence.recurrence)}</strong>.</p>
+      <p className="text-[12px] text-[#5B6B76] mb-4">¿Qué quieres {action === "edit" ? "editar" : "eliminar"}?</p>
+      <div className="flex flex-col gap-2">
+        <button onClick={onChooseOccurrence} className="text-left text-[13px] font-medium border border-[#D8DEE1] rounded-md px-3 py-2.5 hover:bg-[#F0F2F1]">
+          Solo esta actividad <span className="text-[11px] text-[#9AA8AF] font-mono2">({occurrence.occurrenceDate})</span>
+        </button>
+        <button onClick={onChooseSeries} className="text-left text-[13px] font-medium border border-[#D8DEE1] rounded-md px-3 py-2.5 hover:bg-[#F0F2F1]">
+          Toda la serie <span className="text-[11px] text-[#9AA8AF]">({describeRecurrence(occurrence.recurrence)})</span>
+        </button>
       </div>
     </ModalShell>
   );
@@ -1407,9 +1703,9 @@ function AccountModal({ data, gerencias, onClose, onSave }) {
   }
 
   return (
-    <ModalShell title={editing ? "Editar acceso" : "Crear acceso de gerente"} onClose={onClose}>
+    <ModalShell title={editing ? "Editar acceso" : "Crear acceso Comité Ejecutivo"} onClose={onClose}>
       <div onKeyDown={e => { if (e.key === "Enter") submit(e); }}>
-        <Field label="Nombre (usuario de acceso)"><input autoFocus value={username} onChange={e => setUsername(e.target.value)} className={inputCls} placeholder="Nombre del gerente" /></Field>
+        <Field label="Nombre (usuario de acceso)"><input autoFocus value={username} onChange={e => setUsername(e.target.value)} className={inputCls} placeholder="Nombre del integrante" /></Field>
         <Field label="Clave a enviar">
           <div className="flex gap-2">
             <input value={password} onChange={e => setPassword(e.target.value)} className={inputCls} />
