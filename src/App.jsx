@@ -91,6 +91,23 @@ function weekendsOfYear(year) {
 }
 function uid() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4); }
 
+// Detecta celular en orientación horizontal (no tablets/desktop) para ajustar el calendario
+function useIsMobileLandscape() {
+  const compute = () => typeof window !== "undefined" && window.innerWidth > window.innerHeight && window.innerWidth <= 930;
+  const [state, setState] = useState(compute);
+  useEffect(() => {
+    function update() { setState(compute()); }
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+    update();
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
+    };
+  }, []);
+  return state;
+}
+
 /* ---- recurrencia de actividades (similar a Outlook) ---- */
 const WEEKDAY_NAMES = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
 const NTH_NAMES = { 1: "primer", 2: "segundo", 3: "tercer", 4: "cuarto", 5: "último" };
@@ -129,6 +146,7 @@ function expandOccurrences(activities, dateStrs) {
   const dateSet = new Set(dateStrs);
   const result = [];
   activities.forEach(act => {
+    if (act.kind === "multiday") return; // se renderizan como banner en la cabecera, no en la grilla horaria
     if (!act.recurrence) {
       if (dateSet.has(act.date)) result.push({ ...act, occurrenceDate: act.date, originalDate: act.date, seriesId: act.id, isRecurring: false });
       return;
@@ -248,6 +266,7 @@ export default function App() {
 
   const canEditGerencia = (gerencia) => session && (session.role === "master" || (session.role === "gerente" && session.gerencia === gerencia));
   const isStaff = !!session && session.role !== "invitado";
+  const isMobileLandscape = useIsMobileLandscape();
 
   function loginAsGuest() {
     setSession({ username: "Invitado", role: "invitado", gerencia: null });
@@ -402,13 +421,25 @@ export default function App() {
   }
 
   /* ---------------- sorteo ---------------- */
+  function eligibleForWeekend(e, weekendMonth) {
+    if (e.monthsAllowed && e.monthsAllowed.length > 0 && !e.monthsAllowed.includes(weekendMonth)) return false;
+    return true;
+  }
   function generateDraft(year) {
     const weekends = weekendsOfYear(year);
     if (executives.length === 0) { setSorteoDraft({ error: "No hay ejecutivos de turno cargados." }); return; }
     const counts = {}; executives.forEach(e => counts[e.id] = 0);
     let prevId = null;
     const draws = weekends.map(w => {
-      let pool = executives.filter(e => e.id !== prevId);
+      const weekendMonth = parseDate(w.thu).getMonth() + 1;
+      const capOf = (e) => (e.maxPerYear != null ? e.maxPerYear : Infinity);
+      // 1) intento ideal: respeta meses permitidos, tope anual, y evita repetir el finde anterior
+      let pool = executives.filter(e => e.id !== prevId && counts[e.id] < capOf(e) && eligibleForWeekend(e, weekendMonth));
+      // 2) si no hay nadie, permite repetir respecto al finde anterior pero mantiene meses/tope
+      if (pool.length === 0) pool = executives.filter(e => counts[e.id] < capOf(e) && eligibleForWeekend(e, weekendMonth));
+      // 3) si aún no hay nadie (ej: nadie tiene ese mes permitido), ignora el tope pero respeta meses
+      if (pool.length === 0) pool = executives.filter(e => eligibleForWeekend(e, weekendMonth));
+      // 4) último recurso: cualquiera
       if (pool.length === 0) pool = executives;
       const minCount = Math.min(...pool.map(e => counts[e.id]));
       const candidates = pool.filter(e => counts[e.id] === minCount);
@@ -423,8 +454,11 @@ export default function App() {
     setSorteoDraft(prev => {
       if (!prev) return prev;
       const draws = [...prev.draws];
-      const others = executives.filter(e => e.id !== draws[index].executiveId);
-      const pick = (others.length ? others : executives)[Math.floor(Math.random() * (others.length ? others.length : executives.length))];
+      const weekendMonth = parseDate(draws[index].thu).getMonth() + 1;
+      let others = executives.filter(e => e.id !== draws[index].executiveId && eligibleForWeekend(e, weekendMonth));
+      if (others.length === 0) others = executives.filter(e => eligibleForWeekend(e, weekendMonth));
+      const pool = others.length ? others : executives;
+      const pick = pool[Math.floor(Math.random() * pool.length)];
       draws[index] = { ...draws[index], executiveId: pick.id };
       return { ...prev, draws };
     });
@@ -511,7 +545,7 @@ export default function App() {
         </div>
       </nav>
 
-      <main className="max-w-[1400px] mx-auto px-4 md:px-6 py-6 pb-16">
+      <main className={activeTab === "calendario" && isMobileLandscape ? "max-w-full mx-auto px-2 py-2 pb-6" : "max-w-[1400px] mx-auto px-4 md:px-6 py-6 pb-16"}>
         {activeTab === "calendario" && (
           <CalendarView
             weekDays={weekDays}
@@ -764,6 +798,23 @@ function CalendarView({
   weekDays, currentWeekStart, setCurrentWeekStart, canGoPrev, canGoNext, yearMinMonday, yearMaxMonday,
   activities, gerencias, categories, session, isStaff, turnoForDate, executives, canEditGerencia, onAddActivity, onEditActivity, onDeleteActivity, thisYear
 }) {
+  const [viewport, setViewport] = useState(() => ({
+    w: typeof window !== "undefined" ? window.innerWidth : 1024,
+    h: typeof window !== "undefined" ? window.innerHeight : 768,
+  }));
+  useEffect(() => {
+    function handleResize() { setViewport({ w: window.innerWidth, h: window.innerHeight }); }
+    window.addEventListener("resize", handleResize);
+    window.addEventListener("orientationchange", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("orientationchange", handleResize);
+    };
+  }, []);
+  const isMobileLandscape = viewport.w > viewport.h && viewport.w < 1024;
+  const rowH = isMobileLandscape ? 18 : ROW_H;
+  const timeColW = isMobileLandscape ? 40 : 56;
+
   const weekDateStrs = useMemo(() => weekDays.map(fmtDate), [weekDays]);
   const occurrences = useMemo(() => expandOccurrences(activities, weekDateStrs), [activities, weekDateStrs]);
   const slots = timeSlots();
@@ -787,13 +838,15 @@ function CalendarView({
 
   return (
     <div>
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+      <div className={`flex flex-wrap items-center justify-between gap-3 ${isMobileLandscape ? "mb-2" : "mb-4"}`}>
         <div>
-          <h1 className="font-display text-xl font-semibold text-[#1B2733]">Semana {weekNum} · {rangeLabel}</h1>
-          <p className="text-[12px] text-[#5B6B76] mt-0.5">Bloques de 30 minutos, de {START_HOUR}:00 a {END_HOUR}:00. Haz clic en un bloque para agregar una actividad.</p>
+          <h1 className={`font-display font-semibold text-[#1B2733] ${isMobileLandscape ? "text-[15px]" : "text-xl"}`}>Semana {weekNum} · {rangeLabel}</h1>
+          {!isMobileLandscape && (
+            <p className="text-[12px] text-[#5B6B76] mt-0.5">Bloques de 30 minutos, de {START_HOUR}:00 a {END_HOUR}:00. Haz clic en un bloque para agregar una actividad.</p>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          <input type="date" onChange={onPickWeek} className="text-[12px] border border-[#D8DEE1] rounded-md px-2 py-1.5 bg-white text-[#1B2733] font-mono2" />
+          {!isMobileLandscape && <input type="date" onChange={onPickWeek} className="text-[12px] border border-[#D8DEE1] rounded-md px-2 py-1.5 bg-white text-[#1B2733] font-mono2" />}
           <button onClick={gotoToday} className="text-[12px] font-medium px-3 py-1.5 rounded-md border border-[#D8DEE1] bg-white hover:bg-[#F0F2F1] text-[#1B2733]">Hoy</button>
           <div className="flex items-center rounded-md border border-[#D8DEE1] bg-white overflow-hidden">
             <button disabled={!canGoPrev} onClick={() => goto(-1)} className="p-1.5 disabled:opacity-30 hover:bg-[#F0F2F1]"><ChevronLeft size={16} /></button>
@@ -821,23 +874,24 @@ function CalendarView({
 
       <div className="bg-white border border-[#E3E7E5] rounded-lg overflow-hidden">
         {/* cabecera dias */}
-        <div className="grid" style={{ gridTemplateColumns: "56px repeat(7, 1fr)" }}>
+        <div className="grid" style={{ gridTemplateColumns: `${timeColW}px repeat(7, 1fr)` }}>
           <div className="border-b border-r border-[#E3E7E5]" />
           {weekDays.map((d, i) => {
             const dateStr = fmtDate(d);
             const isToday = fmtDate(new Date()) === dateStr;
             const draw = turnoForDate(dateStr);
             const execTurno = draw ? executives.find(e => e.id === draw.executiveId) : null;
+            const multidayActs = activities.filter(a => a.kind === "multiday" && a.dates && a.dates.includes(dateStr));
             return (
-              <div key={i} className={`border-b border-r border-[#E3E7E5] last:border-r-0 px-2 py-2 ${isToday ? "bg-[#FDF6E9]" : ""}`}>
+              <div key={i} className={`border-b border-r border-[#E3E7E5] last:border-r-0 ${isMobileLandscape ? "px-1 py-1" : "px-2 py-2"} ${isToday ? "bg-[#FDF6E9]" : ""}`}>
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="text-[10px] font-semibold text-[#8CA0AC] tracking-wide">{WEEKDAYS_SHORT[i]}</div>
-                    <div className={`text-[15px] font-display font-semibold ${isToday ? "text-[#B0562F]" : "text-[#1B2733]"}`}>{d.getDate()}</div>
+                    <div className={`${isMobileLandscape ? "text-[9px]" : "text-[10px]"} font-semibold text-[#8CA0AC] tracking-wide`}>{WEEKDAYS_SHORT[i]}</div>
+                    <div className={`${isMobileLandscape ? "text-[12px]" : "text-[15px]"} font-display font-semibold ${isToday ? "text-[#B0562F]" : "text-[#1B2733]"}`}>{d.getDate()}</div>
                   </div>
                   {isStaff && (
                     <button onClick={() => onAddActivity(dateStr, "09:00")} className="p-1 rounded hover:bg-[#EFF1EF] text-[#8CA0AC] hover:text-[#1B2733]">
-                      <Plus size={13} />
+                      <Plus size={isMobileLandscape ? 11 : 13} />
                     </button>
                   )}
                 </div>
@@ -847,16 +901,34 @@ function CalendarView({
                     <span className="text-[10px] font-medium text-[#8A6A2A] truncate">Turno: {execTurno.name}</span>
                   </div>
                 )}
+                {multidayActs.map(act => {
+                  const cat = categoryById(categories, act.categoryId);
+                  const color = cat ? cat.color : "#8CA0AC";
+                  const editable = canEditGerencia(act.gerencia);
+                  return (
+                    <div
+                      key={act.id}
+                      onClick={() => editable && onEditActivity({ ...act, occurrenceDate: dateStr, seriesId: act.id, originalDate: dateStr, isRecurring: false })}
+                      className={`mt-1.5 flex items-center gap-1 rounded px-1.5 py-1 border ${editable ? "cursor-pointer" : ""}`}
+                      style={{ backgroundColor: color + "1A", borderColor: color + "55" }}
+                      title={`${act.title} · ${act.gerencia}${cat ? " · " + cat.name : ""}`}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                      <span className="text-[10px] font-medium truncate" style={{ color }}>{act.title}</span>
+                    </div>
+                  );
+                })}
               </div>
             );
           })}
         </div>
 
         {/* grilla horaria */}
-        <div className="grid" style={{ gridTemplateColumns: "56px repeat(7, 1fr)" }}>
+        <div className={isMobileLandscape ? "max-h-[62vh] overflow-y-auto" : ""}>
+        <div className="grid" style={{ gridTemplateColumns: `${timeColW}px repeat(7, 1fr)` }}>
           <div>
             {slots.map((t, i) => (
-              <div key={t} className="border-r border-[#E3E7E5] text-right pr-1.5 text-[10px] font-mono2 text-[#9AA8AF]" style={{ height: ROW_H }}>
+              <div key={t} className="border-r border-[#E3E7E5] text-right pr-1.5 text-[10px] font-mono2 text-[#9AA8AF]" style={{ height: rowH }}>
                 {t.endsWith(":00") ? <span className="relative -top-1.5">{t}</span> : null}
               </div>
             ))}
@@ -865,20 +937,20 @@ function CalendarView({
             const dateStr = fmtDate(d);
             const dayActs = occurrences.filter(a => a.occurrenceDate === dateStr);
             return (
-              <div key={colIdx} className="relative border-r border-[#E3E7E5] last:border-r-0" style={{ height: slots.length * ROW_H }}>
+              <div key={colIdx} className="relative border-r border-[#E3E7E5] last:border-r-0" style={{ height: slots.length * rowH }}>
                 {slots.map((t, i) => (
                   <div
                     key={t}
                     onClick={() => isStaff && onAddActivity(dateStr, t)}
                     className={`border-b border-[#EEF1F0] ${isStaff ? "hover:bg-[#F5F8F1] cursor-pointer" : ""} ${t.endsWith(":00") ? "border-t border-t-[#E3E7E5]" : ""}`}
-                    style={{ height: ROW_H }}
+                    style={{ height: rowH }}
                   />
                 ))}
                 {dayActs.map(act => {
                   const startMin = timeToMinutes(act.start) - START_HOUR * 60;
                   const endMin = timeToMinutes(act.end) - START_HOUR * 60;
-                  const top = (startMin / 30) * ROW_H;
-                  const height = Math.max(((endMin - startMin) / 30) * ROW_H - 2, ROW_H - 4);
+                  const top = (startMin / 30) * rowH;
+                  const height = Math.max(((endMin - startMin) / 30) * rowH - 2, rowH - 4);
                   const cat = categoryById(categories, act.categoryId);
                   const color = cat ? cat.color : "#8CA0AC";
                   const editable = canEditGerencia(act.gerencia);
@@ -901,6 +973,7 @@ function CalendarView({
               </div>
             );
           })}
+        </div>
         </div>
       </div>
     </div>
@@ -1616,6 +1689,12 @@ function ActivityModal({ data, gerencias, categories, session, onClose, onSave, 
   const [error, setError] = useState("");
   const gerenciaLocked = session.role === "gerente";
 
+  const [kind, setKind] = useState(act?.kind || "timed");
+  const [multiDates, setMultiDates] = useState(act?.dates || (data.date ? [data.date] : []));
+  const multiAnchor = date ? parseDate(date) : new Date();
+  const multiMonday = getMonday(multiAnchor);
+  const multiWeekOptions = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(multiMonday, i)), [multiMonday.getTime()]);
+
   // repetición: solo se elige/edita a nivel de "add" o "edit" de serie, no en edit-occurrence
   const [repeatType, setRepeatType] = useState(act?.recurrence ? act.recurrence.freq : "none");
   const [repeatUntil, setRepeatUntil] = useState(act?.recurrence?.until || "");
@@ -1627,23 +1706,34 @@ function ActivityModal({ data, gerencias, categories, session, onClose, onSave, 
     act?.recurrence?.freq === "monthly" ? act.recurrence.nth : nthWeekdayOfMonth(refDate)
   );
 
+  function toggleMultiDate(ds) {
+    setMultiDates(prev => prev.includes(ds) ? prev.filter(x => x !== ds) : [...prev, ds].sort());
+  }
+
   function submit(e) {
     if (e && e.preventDefault) e.preventDefault();
     if (!title.trim()) { setError("Ingresa un título para la actividad."); return; }
     if (!gerencia) { setError("Selecciona una gerencia."); return; }
     if (!categoryId) { setError("Selecciona una clasificación."); return; }
-    if (timeToMinutes(end) - timeToMinutes(start) < 30) { setError("El bloque debe durar al menos 30 minutos."); return; }
 
     if (isOccurrenceMode) {
+      if (timeToMinutes(end) - timeToMinutes(start) < 30) { setError("El bloque debe durar al menos 30 minutos."); return; }
       onSaveOccurrence(act, { title: title.trim(), date, start, end, gerencia, categoryId, note: note.trim() });
       return;
     }
 
+    if (kind === "multiday") {
+      if (multiDates.length === 0) { setError("Selecciona al menos un día en que ocurre."); return; }
+      onSave({ id: act?.id, title: title.trim(), gerencia, categoryId, note: note.trim(), kind: "multiday", dates: [...multiDates].sort(), date: multiDates[0], start: null, end: null, recurrence: null });
+      return;
+    }
+
+    if (timeToMinutes(end) - timeToMinutes(start) < 30) { setError("El bloque debe durar al menos 30 minutos."); return; }
     let recurrence = null;
     if (repeatType === "weekly") recurrence = { freq: "weekly", weekday: repeatWeekday, until: repeatUntil || null };
     if (repeatType === "monthly") recurrence = { freq: "monthly", weekday: repeatWeekday, nth: repeatNth, until: repeatUntil || null };
 
-    onSave({ id: act?.id, title: title.trim(), date, start, end, gerencia, categoryId, note: note.trim(), recurrence });
+    onSave({ id: act?.id, title: title.trim(), date, start, end, gerencia, categoryId, note: note.trim(), recurrence, kind: "timed" });
   }
 
   return (
@@ -1655,19 +1745,62 @@ function ActivityModal({ data, gerencias, categories, session, onClose, onSave, 
           </div>
         )}
         <Field label="Título"><input autoFocus value={title} onChange={e => setTitle(e.target.value)} className={inputCls} placeholder="Reunión de coordinación" /></Field>
-        <div className="grid grid-cols-3 gap-2">
-          <Field label="Fecha"><input type="date" value={date} onChange={e => setDate(e.target.value)} className={inputCls} /></Field>
-          <Field label="Inicio">
-            <select value={start} onChange={e => { setStart(e.target.value); if (timeToMinutes(end) <= timeToMinutes(e.target.value)) setEnd(minutesToTime(timeToMinutes(e.target.value) + 60)); }} className={inputCls}>
-              {timeSlots().map(t => <option key={t} value={t}>{t}</option>)}
+
+        {!isOccurrenceMode && (
+          <Field label="Tipo de actividad">
+            <select value={kind} onChange={e => setKind(e.target.value)} className={inputCls}>
+              <option value="timed">Un día, con horario</option>
+              <option value="multiday">Varios días de una semana (sin horario, ej. capacitación)</option>
             </select>
           </Field>
-          <Field label="Término">
-            <select value={end} onChange={e => setEnd(e.target.value)} className={inputCls}>
-              {endTimeOptions(start).map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </Field>
-        </div>
+        )}
+
+        {kind === "timed" || isOccurrenceMode ? (
+          <div className="grid grid-cols-3 gap-2">
+            <Field label="Fecha"><input type="date" value={date} onChange={e => setDate(e.target.value)} className={inputCls} /></Field>
+            <Field label="Inicio">
+              <select value={start} onChange={e => { setStart(e.target.value); if (timeToMinutes(end) <= timeToMinutes(e.target.value)) setEnd(minutesToTime(timeToMinutes(e.target.value) + 60)); }} className={inputCls}>
+                {timeSlots().map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </Field>
+            <Field label="Término">
+              <select value={end} onChange={e => setEnd(e.target.value)} className={inputCls}>
+                {endTimeOptions(start).map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </Field>
+          </div>
+        ) : (
+          <>
+            <Field label="Semana de">
+              <input type="date" value={date} onChange={e => setDate(e.target.value)} className={inputCls} />
+              <p className="text-[11px] text-[#9AA8AF] mt-1">Elige cualquier fecha de la semana en que ocurre — abajo eliges los días exactos.</p>
+            </Field>
+            <Field label="Días en que ocurre">
+              <div className="grid grid-cols-7 gap-1">
+                {multiWeekOptions.map(d => {
+                  const ds = fmtDate(d);
+                  const checked = multiDates.includes(ds);
+                  return (
+                    <button
+                      type="button" key={ds}
+                      onClick={() => toggleMultiDate(ds)}
+                      className={`text-center rounded-md py-2 border ${checked ? "bg-[#2F6F5E] text-white border-[#2F6F5E]" : "bg-white border-[#D8DEE1] text-[#3D4C56]"}`}
+                    >
+                      <div className="text-[10px] font-semibold">{WEEKDAY_NAMES[d.getDay()].slice(0, 3)}</div>
+                      <div className="text-[12px] font-mono2">{d.getDate()}</div>
+                    </button>
+                  );
+                })}
+              </div>
+              {multiDates.length > 0 && (
+                <p className="text-[11px] text-[#2F6F5E] mt-1.5 flex items-center gap-1">
+                  <RefreshCw size={10} /> Se mostrará como una etiqueta en la cabecera de {multiDates.length} día{multiDates.length !== 1 ? "s" : ""}, igual que el turno de fin de semana.
+                </p>
+              )}
+            </Field>
+          </>
+        )}
+
         <div className="grid grid-cols-2 gap-2">
           <Field label="Gerencia">
             <select value={gerencia} onChange={e => setGerencia(e.target.value)} className={inputCls} disabled={gerenciaLocked}>
@@ -1694,7 +1827,7 @@ function ActivityModal({ data, gerencias, categories, session, onClose, onSave, 
         )}
         {categories.length === 0 && <p className="text-[12px] text-[#C1443B] mb-3">No hay clasificaciones creadas. Pídele a Excelencia Operacional que cree una en Administración.</p>}
 
-        {!isOccurrenceMode && (
+        {!isOccurrenceMode && kind === "timed" && (
           <>
             <Field label="Repetición">
               <select value={repeatType} onChange={e => setRepeatType(e.target.value)} className={inputCls}>
@@ -1783,11 +1916,25 @@ function ExecutivoModal({ data, gerencias, session, onClose, onSave, onAddGerenc
   const [error, setError] = useState("");
   const gerenciaLocked = session.role === "gerente";
 
+  const [showAdvanced, setShowAdvanced] = useState(!!(exec?.maxPerYear || (exec?.monthsAllowed && exec.monthsAllowed.length)));
+  const [maxPerYear, setMaxPerYear] = useState(exec?.maxPerYear ?? "");
+  const [monthsAllowed, setMonthsAllowed] = useState(exec?.monthsAllowed || []);
+
+  function toggleMonth(m) {
+    setMonthsAllowed(prev => prev.includes(m) ? prev.filter(x => x !== m) : [...prev, m].sort((a, b) => a - b));
+  }
+
   function submit(e) {
     if (e && e.preventDefault) e.preventDefault();
     if (!name.trim()) { setError("Ingresa el nombre del ejecutivo."); return; }
     if (!gerencia) { setError("Selecciona una gerencia."); return; }
-    onSave({ id: exec?.id, name: name.trim(), gerencia });
+    onSave({
+      id: exec?.id,
+      name: name.trim(),
+      gerencia,
+      maxPerYear: maxPerYear === "" ? null : Math.max(0, parseInt(maxPerYear, 10) || 0),
+      monthsAllowed: monthsAllowed.length ? monthsAllowed : null,
+    });
   }
 
   return (
@@ -1805,6 +1952,43 @@ function ExecutivoModal({ data, gerencias, session, onClose, onSave, onAddGerenc
             <button type="button" onClick={() => { if (newG.trim()) { onAddGerencia(newG.trim()); setGerencia(newG.trim()); setNewG(""); } }} className="text-[12px] font-medium text-[#2F6F5E] whitespace-nowrap">Crear</button>
           </div>
         )}
+
+        <button type="button" onClick={() => setShowAdvanced(v => !v)} className="text-[11px] font-medium text-[#5B6B76] hover:text-[#1B2733] mb-3 flex items-center gap-1">
+          {showAdvanced ? "▾" : "▸"} Opciones avanzadas del sorteo (opcional)
+        </button>
+
+        {showAdvanced && (
+          <div className="mb-3.5 border border-[#E3E7E5] rounded-md p-3 bg-[#FAFBFA]">
+            <Field label="Máximo de turnos al año (sorteo)">
+              <input
+                type="number" min="0" value={maxPerYear}
+                onChange={e => setMaxPerYear(e.target.value)}
+                placeholder="Sin límite"
+                className={inputCls}
+              />
+              <p className="text-[11px] text-[#9AA8AF] mt-1">Deja vacío para no limitar. El sorteo automático nunca le asignará más turnos que este número.</p>
+            </Field>
+            <Field label="Meses en que puede quedar de turno">
+              <div className="grid grid-cols-4 gap-1.5">
+                {MONTHS.map((m, idx) => {
+                  const monthNum = idx + 1;
+                  const checked = monthsAllowed.includes(monthNum);
+                  return (
+                    <button
+                      type="button" key={monthNum}
+                      onClick={() => toggleMonth(monthNum)}
+                      className={`text-[11px] rounded-md py-1.5 border capitalize ${checked ? "bg-[#2F6F5E] text-white border-[#2F6F5E]" : "bg-white border-[#D8DEE1] text-[#3D4C56]"}`}
+                    >
+                      {m.slice(0, 3)}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-[#9AA8AF] mt-1">Si no marcas ninguno, puede quedar de turno cualquier mes. Si marcas alguno(s), el sorteo solo lo considerará esos meses.</p>
+            </Field>
+          </div>
+        )}
+
         {error && <p className="text-[12px] text-[#C1443B] mb-3">{error}</p>}
         <button type="button" onClick={submit} className="w-full text-[13px] font-medium text-white bg-[#2F6F5E] hover:bg-[#285F51] py-2.5 rounded-md">Guardar</button>
       </div>
