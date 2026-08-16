@@ -437,21 +437,28 @@ export default function App() {
     pushAudit("Sorteo validado", `Año ${sorteoDraft.year} — ${validated.length} fines de semana`);
     setSorteoDraft(null);
   }
-  async function manualSetShift(year, weekend, executiveId) {
+  async function manualSetShift(year, weekend, assignment) {
+    // assignment: null (desasignar) | { executiveId } | { manualName }
     const current = shiftDraws[year] || [];
     let nextYear;
-    if (!executiveId) {
+    if (!assignment) {
       nextYear = current.filter(d => d.thu !== weekend.thu);
     } else {
       const idx = current.findIndex(d => d.thu === weekend.thu);
-      const entry = { id: idx >= 0 ? current[idx].id : uid(), thu: weekend.thu, fri: weekend.fri, sat: weekend.sat, sun: weekend.sun, executiveId, status: "validated" };
+      const entry = {
+        id: idx >= 0 ? current[idx].id : uid(),
+        thu: weekend.thu, fri: weekend.fri, sat: weekend.sat, sun: weekend.sun,
+        executiveId: assignment.executiveId || null,
+        manualName: assignment.manualName || null,
+        status: "validated"
+      };
       if (idx >= 0) { nextYear = [...current]; nextYear[idx] = entry; }
       else nextYear = [...current, entry].sort((a, b) => a.thu.localeCompare(b.thu));
     }
     const next = { ...shiftDraws, [year]: nextYear };
     setShiftDraws(next); await saveKey(STORAGE_KEYS.shiftDraws, next);
-    const execName = executiveId ? (executives.find(e => e.id === executiveId)?.name || executiveId) : "sin asignar";
-    pushAudit("Turno asignado manualmente", `${weekend.thu} (${year}) → ${execName}`);
+    const label = assignment ? (assignment.executiveId ? (executives.find(e => e.id === assignment.executiveId)?.name || assignment.executiveId) : assignment.manualName) : "sin asignar";
+    pushAudit("Turno asignado manualmente", `${weekend.thu} (${year}) → ${label}`);
   }
 
   /* ---------------- semana visible ---------------- */
@@ -1156,34 +1163,106 @@ function ValidatedShiftsTable({ year, validated, executives, gerencias, isMaster
         <tbody>
           {weekends.map(w => {
             const d = byThu[w.thu];
-            const exec = d ? executives.find(e => e.id === d.executiveId) : null;
+            const exec = d && d.executiveId ? executives.find(e => e.id === d.executiveId) : null;
+            const manualName = d && !d.executiveId ? d.manualName : null;
             const color = exec ? gerenciaColor(exec.gerencia, gerencias) : "#9AA8AF";
             const thu = parseDate(w.thu);
             return (
               <tr key={w.thu} className="border-b border-[#F5F6F5] last:border-b-0">
-                <td className="px-4 py-2 font-mono2 text-[12px] text-[#5B6B76] whitespace-nowrap">{thu.getDate()} {MONTHS[thu.getMonth()].slice(0, 3)} – {parseDate(w.sun).getDate()} {MONTHS[parseDate(w.sun).getMonth()].slice(0, 3)}</td>
-                <td className="px-4 py-2">
+                <td className="px-4 py-2 font-mono2 text-[12px] text-[#5B6B76] whitespace-nowrap align-top pt-3">{thu.getDate()} {MONTHS[thu.getMonth()].slice(0, 3)} – {parseDate(w.sun).getDate()} {MONTHS[parseDate(w.sun).getMonth()].slice(0, 3)}</td>
+                <td className="px-4 py-2 align-top">
                   {isMaster ? (
-                    <select
-                      value={d ? d.executiveId : ""}
-                      onChange={e => onManualAssign(year, w, e.target.value || null)}
-                      className="text-[12px] border border-[#D8DEE1] rounded-md px-2 py-1.5 bg-white w-full max-w-[280px]"
-                    >
-                      <option value="">Sin asignar</option>
-                      {executives.map(ex => <option key={ex.id} value={ex.id}>{ex.name} — {ex.gerencia}</option>)}
-                    </select>
+                    <ShiftAssignCell weekend={w} year={year} entry={d} executives={executives} onManualAssign={onManualAssign} />
                   ) : (
-                    <span className="font-medium">{exec ? exec.name : "Sin asignar"}</span>
+                    <span className="font-medium">{exec ? exec.name : manualName || "Sin asignar"}</span>
                   )}
                 </td>
-                <td className="px-4 py-2">
-                  {exec ? <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: color + "1A", color }}>{exec.gerencia}</span> : <span className="text-[11px] text-[#9AA8AF]">—</span>}
+                <td className="px-4 py-2 align-top pt-3">
+                  {exec ? (
+                    <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: color + "1A", color }}>{exec.gerencia}</span>
+                  ) : manualName ? (
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#F0F2F1] text-[#5B6B76]">Fuera del listado</span>
+                  ) : (
+                    <span className="text-[11px] text-[#9AA8AF]">—</span>
+                  )}
                 </td>
               </tr>
             );
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function ShiftAssignCell({ weekend, year, entry, executives, onManualAssign }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const wrapRef = useRef(null);
+
+  const currentExec = entry && entry.executiveId ? executives.find(e => e.id === entry.executiveId) : null;
+  const displayValue = currentExec ? currentExec.name : (entry?.manualName || "");
+  const hasValue = !!(currentExec || entry?.manualName);
+
+  const filtered = query.trim()
+    ? executives.filter(e => e.name.toLowerCase().includes(query.trim().toLowerCase()))
+    : executives;
+
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  function pick(exec) {
+    onManualAssign(year, weekend, { executiveId: exec.id });
+    setQuery(""); setOpen(false);
+  }
+  function pickManual() {
+    if (!query.trim()) return;
+    onManualAssign(year, weekend, { manualName: query.trim() });
+    setQuery(""); setOpen(false);
+  }
+  function clear(e) {
+    e.stopPropagation();
+    onManualAssign(year, weekend, null);
+    setQuery(""); setOpen(false);
+  }
+
+  return (
+    <div className="relative" ref={wrapRef}>
+      <div className="flex items-center gap-1 border border-[#D8DEE1] rounded-md bg-white pr-1 w-full max-w-[260px] focus-within:border-[#2F6F5E]">
+        <input
+          value={open ? query : displayValue}
+          onChange={e => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => { setQuery(""); setOpen(true); }}
+          placeholder="Buscar o escribir nombre…"
+          className="text-[12px] px-2 py-1.5 w-full outline-none bg-transparent"
+        />
+        {hasValue && !open && (
+          <button type="button" onClick={clear} title="Quitar asignación" className="text-[#9AA8AF] hover:text-[#C1443B] shrink-0 px-1">
+            <X size={13} />
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="absolute z-20 mt-1 w-full max-w-[280px] bg-white border border-[#D8DEE1] rounded-md shadow-lg max-h-56 overflow-y-auto">
+          {filtered.length === 0 && <div className="px-3 py-2 text-[11px] text-[#9AA8AF]">Sin coincidencias en el pool de ejecutivos.</div>}
+          {filtered.map(ex => (
+            <button type="button" key={ex.id} onClick={() => pick(ex)} className="w-full text-left px-3 py-1.5 text-[12px] hover:bg-[#F0F2F1] flex items-center justify-between gap-2">
+              <span className="truncate">{ex.name}</span>
+              <span className="text-[10px] text-[#9AA8AF] shrink-0">{ex.gerencia}</span>
+            </button>
+          ))}
+          {query.trim() && (
+            <button type="button" onClick={pickManual} className="w-full text-left px-3 py-2 text-[12px] border-t border-[#F0F2F1] text-[#2F6F5E] hover:bg-[#EAF3EF] font-medium">
+              + Asignar "{query.trim()}" (fuera del listado de ejecutivos)
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1235,6 +1314,7 @@ function DrawTable({ draws, executives, gerencias, onReroll, editable }) {
 function EstadisticasView({ executives, gerencias, shiftDraws, thisYear }) {
   const [year, setYear] = useState(thisYear);
   const draws = shiftDraws[year] || [];
+  const manualOutside = draws.filter(d => !d.executiveId && d.manualName);
 
   const perGerencia = gerencias.map(g => {
     const execsInPool = executives.filter(e => e.gerencia === g);
@@ -1258,9 +1338,15 @@ function EstadisticasView({ executives, gerencias, shiftDraws, thisYear }) {
           <p className="text-[12px] text-[#5B6B76] mt-0.5">Objetivo: máximo {TARGET_SHIFTS} turnos de fin de semana por ejecutivo al año.</p>
         </div>
         <select value={year} onChange={e => setYear(Number(e.target.value))} className="text-[13px] border border-[#D8DEE1] rounded-md px-2.5 py-2 bg-white">
-          {[thisYear, thisYear + 1].map(y => <option key={y} value={y}>{y}</option>)}
+          {Array.from({ length: 7 }, (_, i) => thisYear - 1 + i).map(y => <option key={y} value={y}>{y}</option>)}
         </select>
       </div>
+
+      {manualOutside.length > 0 && (
+        <div className="mb-4 text-[12px] text-[#5B6B76] bg-white border border-[#E3E7E5] rounded-md px-3 py-2">
+          <strong>{manualOutside.length}</strong> turno{manualOutside.length !== 1 ? "s" : ""} de {year} asignado{manualOutside.length !== 1 ? "s" : ""} a persona{manualOutside.length !== 1 ? "s" : ""} fuera del listado de ejecutivos ({manualOutside.map(d => d.manualName).join(", ")}) — no se cuentan en las tablas de abajo porque no pertenecen al pool actual.
+        </div>
+      )}
 
       <div className="grid lg:grid-cols-2 gap-4 mb-6">
         <div className="bg-white border border-[#E3E7E5] rounded-lg overflow-hidden">
@@ -1533,10 +1619,13 @@ function ActivityModal({ data, gerencias, categories, session, onClose, onSave, 
   // repetición: solo se elige/edita a nivel de "add" o "edit" de serie, no en edit-occurrence
   const [repeatType, setRepeatType] = useState(act?.recurrence ? act.recurrence.freq : "none");
   const [repeatUntil, setRepeatUntil] = useState(act?.recurrence?.until || "");
-
   const refDate = date ? parseDate(date) : new Date();
-  const weekdayPreview = WEEKDAY_NAMES[refDate.getDay()];
-  const nthPreview = NTH_NAMES[nthWeekdayOfMonth(refDate)] || "último";
+  const [repeatWeekday, setRepeatWeekday] = useState(
+    act?.recurrence ? act.recurrence.weekday : refDate.getDay()
+  );
+  const [repeatNth, setRepeatNth] = useState(
+    act?.recurrence?.freq === "monthly" ? act.recurrence.nth : nthWeekdayOfMonth(refDate)
+  );
 
   function submit(e) {
     if (e && e.preventDefault) e.preventDefault();
@@ -1551,8 +1640,8 @@ function ActivityModal({ data, gerencias, categories, session, onClose, onSave, 
     }
 
     let recurrence = null;
-    if (repeatType === "weekly") recurrence = { freq: "weekly", weekday: refDate.getDay(), until: repeatUntil || null };
-    if (repeatType === "monthly") recurrence = { freq: "monthly", weekday: refDate.getDay(), nth: nthWeekdayOfMonth(refDate), until: repeatUntil || null };
+    if (repeatType === "weekly") recurrence = { freq: "weekly", weekday: repeatWeekday, until: repeatUntil || null };
+    if (repeatType === "monthly") recurrence = { freq: "monthly", weekday: repeatWeekday, nth: repeatNth, until: repeatUntil || null };
 
     onSave({ id: act?.id, title: title.trim(), date, start, end, gerencia, categoryId, note: note.trim(), recurrence });
   }
@@ -1610,15 +1699,50 @@ function ActivityModal({ data, gerencias, categories, session, onClose, onSave, 
             <Field label="Repetición">
               <select value={repeatType} onChange={e => setRepeatType(e.target.value)} className={inputCls}>
                 <option value="none">No se repite (única vez)</option>
-                <option value="weekly">Semanalmente — cada {weekdayPreview}</option>
-                <option value="monthly">Mensualmente — el {nthPreview} {weekdayPreview} de cada mes</option>
+                <option value="weekly">Semanalmente</option>
+                <option value="monthly">Mensualmente</option>
               </select>
             </Field>
-            {repeatType !== "none" && (
-              <Field label="Repetir hasta (opcional)">
-                <input type="date" value={repeatUntil} onChange={e => setRepeatUntil(e.target.value)} className={inputCls} />
-                <p className="text-[11px] text-[#9AA8AF] mt-1">Si lo dejas vacío, se repite indefinidamente. Puedes editar o eliminar fechas puntuales más adelante sin afectar el resto.</p>
+
+            {repeatType === "weekly" && (
+              <Field label="Día de la semana">
+                <select value={repeatWeekday} onChange={e => setRepeatWeekday(Number(e.target.value))} className={inputCls}>
+                  {WEEKDAY_NAMES.map((name, idx) => <option key={idx} value={idx}>{name}</option>)}
+                </select>
               </Field>
+            )}
+
+            {repeatType === "monthly" && (
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="Cuál">
+                  <select value={repeatNth} onChange={e => setRepeatNth(Number(e.target.value))} className={inputCls}>
+                    {Object.entries(NTH_NAMES).map(([n, label]) => <option key={n} value={n}>{label.charAt(0).toUpperCase() + label.slice(1)}</option>)}
+                  </select>
+                </Field>
+                <Field label="Día de la semana">
+                  <select value={repeatWeekday} onChange={e => setRepeatWeekday(Number(e.target.value))} className={inputCls}>
+                    {WEEKDAY_NAMES.map((name, idx) => <option key={idx} value={idx}>{name}</option>)}
+                  </select>
+                </Field>
+              </div>
+            )}
+
+            {repeatType !== "none" && (
+              <>
+                <div className="flex items-center gap-1.5 -mt-2.5 mb-3.5">
+                  <RefreshCw size={12} className="text-[#2F6F5E] shrink-0" />
+                  <span className="text-[11px] text-[#2F6F5E]">
+                    {repeatType === "weekly"
+                      ? `Se repite cada ${WEEKDAY_NAMES[repeatWeekday]}`
+                      : `Se repite el ${NTH_NAMES[repeatNth]} ${WEEKDAY_NAMES[repeatWeekday]} de cada mes`}
+                    , a partir del {date || "—"}.
+                  </span>
+                </div>
+                <Field label="Repetir hasta (opcional)">
+                  <input type="date" value={repeatUntil} onChange={e => setRepeatUntil(e.target.value)} className={inputCls} />
+                  <p className="text-[11px] text-[#9AA8AF] mt-1">Si lo dejas vacío, se repite indefinidamente. Puedes editar o eliminar fechas puntuales más adelante sin afectar el resto.</p>
+                </Field>
+              </>
             )}
           </>
         )}
