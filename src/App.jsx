@@ -1211,16 +1211,16 @@ function SorteoView({ session, executives, gerencias, sorteoYear, setSorteoYear,
           <h1 className="font-display text-xl font-semibold text-[#1B2733]">Sorteo de turnos de fin de semana</h1>
           <p className="text-[12px] text-[#5B6B76] mt-0.5">Asigna aleatoriamente un ejecutivo de turno a cada bloque jueves–domingo del año.</p>
         </div>
-        {isMaster && (
-          <div className="flex items-center gap-2">
-            <select value={sorteoYear} onChange={e => setSorteoYear(Number(e.target.value))} className="text-[13px] border border-[#D8DEE1] rounded-md px-2.5 py-2 bg-white">
-              {yearsAvailable.map(y => <option key={y} value={y}>{y}</option>)}
-            </select>
+        <div className="flex items-center gap-2">
+          <select value={sorteoYear} onChange={e => setSorteoYear(Number(e.target.value))} className="text-[13px] border border-[#D8DEE1] rounded-md px-2.5 py-2 bg-white">
+            {yearsAvailable.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+          {isMaster && (
             <button onClick={onGenerate} className="flex items-center gap-1.5 text-[13px] font-medium text-white bg-[#E8A33D] hover:bg-[#D6922E] px-3.5 py-2 rounded-md">
               <Shuffle size={14} /> Generar sorteo
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {!isMaster && (
