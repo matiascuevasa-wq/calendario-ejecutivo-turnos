@@ -920,107 +920,105 @@ function CalendarView({
       )}
 
       <div className="bg-white border border-[#E3E7E5] rounded-lg overflow-hidden">
-        {/* cabecera dias */}
-        <div className="grid" style={{ gridTemplateColumns: `${timeColW}px repeat(7, 1fr)` }}>
-          <div className="border-b border-r border-[#E3E7E5]" />
-          {weekDays.map((d, i) => {
-            const dateStr = fmtDate(d);
-            const isToday = fmtDate(new Date()) === dateStr;
-            const draw = turnoForDate(dateStr);
-            const execTurno = draw ? executives.find(e => e.id === draw.executiveId) : null;
-            const multidayActs = activities.filter(a => a.kind === "multiday" && a.dates && a.dates.includes(dateStr));
-            return (
-              <div key={i} className={`border-b border-r border-[#E3E7E5] last:border-r-0 ${isMobileLandscape ? "px-1 py-1" : "px-1.5 py-2"} ${isToday ? "bg-[#FDF6E9]" : ""}`}>
-                <div className="flex items-center justify-between px-0.5">
-                  <div>
-                    <div className={`${isMobileLandscape ? "text-[9px]" : "text-[10px]"} font-semibold text-[#8CA0AC] tracking-wide`}>{WEEKDAYS_SHORT[i]}</div>
-                    <div className={`${isMobileLandscape ? "text-[12px]" : "text-[15px]"} font-display font-semibold ${isToday ? "text-[#B0562F]" : "text-[#1B2733]"}`}>{d.getDate()}</div>
-                  </div>
-                  {isStaff && (
-                    <button onClick={() => onAddActivity(dateStr, "09:00")} className="p-1 rounded hover:bg-[#EFF1EF] text-[#8CA0AC] hover:text-[#1B2733]">
-                      <Plus size={isMobileLandscape ? 11 : 13} />
-                    </button>
-                  )}
-                </div>
-                {execTurno && (
-                  <div className="mt-1.5 flex items-center gap-1 min-w-0 overflow-hidden bg-[#FDF3E1] border border-[#F0D9A8] rounded px-1.5 py-1" title={`Turno de fin de semana — ${execTurno.gerencia}`}>
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#E8A33D] shrink-0" />
-                    <span className="text-[10px] font-medium text-[#8A6A2A] truncate min-w-0">Turno: {execTurno.name}</span>
-                  </div>
-                )}
-                {multidayActs.map(act => {
-                  const cat = categoryById(categories, act.categoryId);
-                  const color = cat ? cat.color : "#8CA0AC";
-                  const editable = canEditGerencia(act.gerencia);
-                  return (
-                    <div
-                      key={act.id}
-                      onClick={() => editable && onEditActivity({ ...act, occurrenceDate: dateStr, seriesId: act.id, originalDate: dateStr, isRecurring: false })}
-                      className={`mt-1.5 flex items-center gap-1 min-w-0 overflow-hidden rounded px-1.5 py-1 border ${editable ? "cursor-pointer" : ""}`}
-                      style={{ backgroundColor: color + "1A", borderColor: color + "55" }}
-                      title={`${act.title} · ${act.gerencia}${cat ? " · " + cat.name : ""}`}
-                    >
-                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
-                      <span className="text-[10px] font-medium truncate min-w-0" style={{ color }}>{act.title}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* grilla horaria */}
         <div className={isMobileLandscape ? "max-h-[62vh] overflow-y-auto" : ""}>
-        <div className="grid" style={{ gridTemplateColumns: `${timeColW}px repeat(7, 1fr)` }}>
-          <div>
-            {slots.map((t, i) => (
-              <div key={t} className="border-r border-[#E3E7E5] text-right pr-1.5 text-[10px] font-mono2 text-[#9AA8AF]" style={{ height: rowH }}>
-                {t.endsWith(":00") ? <span className="relative -top-1.5">{t}</span> : null}
-              </div>
-            ))}
-          </div>
-          {weekDays.map((d, colIdx) => {
-            const dateStr = fmtDate(d);
-            const dayActs = occurrences.filter(a => a.occurrenceDate === dateStr);
-            return (
-              <div key={colIdx} className="relative border-r border-[#E3E7E5] last:border-r-0" style={{ height: slots.length * rowH }}>
-                {slots.map((t, i) => (
-                  <div
-                    key={t}
-                    onClick={() => isStaff && onAddActivity(dateStr, t)}
-                    className={`border-b border-[#EEF1F0] ${isStaff ? "hover:bg-[#F5F8F1] cursor-pointer" : ""} ${t.endsWith(":00") ? "border-t border-t-[#E3E7E5]" : ""}`}
-                    style={{ height: rowH }}
-                  />
-                ))}
-                {dayActs.map(act => {
-                  const startMin = timeToMinutes(act.start) - START_HOUR * 60;
-                  const endMin = timeToMinutes(act.end) - START_HOUR * 60;
-                  const top = (startMin / 30) * rowH;
-                  const height = Math.max(((endMin - startMin) / 30) * rowH - 2, rowH - 4);
-                  const cat = categoryById(categories, act.categoryId);
-                  const color = cat ? cat.color : "#8CA0AC";
-                  const editable = canEditGerencia(act.gerencia);
-                  return (
-                    <div
-                      key={act.seriesId + "-" + act.occurrenceDate}
-                      onClick={(e) => { e.stopPropagation(); if (editable) onEditActivity(act); }}
-                      className={`absolute left-0.5 right-0.5 rounded-[4px] px-1.5 py-0.5 overflow-hidden ${editable ? "cursor-pointer" : ""}`}
-                      style={{ top, height, backgroundColor: color + "1F", borderLeft: `3px solid ${color}` }}
-                      title={`${act.title} · ${act.start}-${act.end} · ${act.gerencia}${cat ? " · " + cat.name : ""}${act.isRecurring ? " · " + describeRecurrence(act.recurrence) : ""}`}
-                    >
-                      <div className="flex items-center gap-1 min-w-0" style={{ color }}>
-                        {act.isRecurring && <RefreshCw size={9} className="shrink-0" />}
-                        <span className="text-[10.5px] font-semibold leading-tight truncate min-w-0">{act.title}</span>
-                      </div>
-                      <div className="text-[9px] text-[#5B6B76] leading-tight font-mono2 truncate">{act.start}–{act.end} · {act.gerencia}</div>
+          <div className="grid" style={{ gridTemplateColumns: `${timeColW}px repeat(7, 1fr)` }}>
+            {/* fila de encabezado (sticky) */}
+            <div className="sticky top-0 z-10 bg-white border-b border-r border-[#E3E7E5]" />
+            {weekDays.map((d, i) => {
+              const dateStr = fmtDate(d);
+              const isToday = fmtDate(new Date()) === dateStr;
+              const draw = turnoForDate(dateStr);
+              const execTurno = draw ? executives.find(e => e.id === draw.executiveId) : null;
+              const multidayActs = activities.filter(a => a.kind === "multiday" && a.dates && a.dates.includes(dateStr));
+              return (
+                <div key={`h-${i}`} className={`sticky top-0 z-10 border-b border-r border-[#E3E7E5] last:border-r-0 ${isMobileLandscape ? "px-1 py-1" : "px-1.5 py-2"} ${isToday ? "bg-[#FDF6E9]" : "bg-white"}`}>
+                  <div className="flex items-center justify-between px-0.5">
+                    <div>
+                      <div className={`${isMobileLandscape ? "text-[9px]" : "text-[10px]"} font-semibold text-[#8CA0AC] tracking-wide`}>{WEEKDAYS_SHORT[i]}</div>
+                      <div className={`${isMobileLandscape ? "text-[12px]" : "text-[15px]"} font-display font-semibold ${isToday ? "text-[#B0562F]" : "text-[#1B2733]"}`}>{d.getDate()}</div>
                     </div>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </div>
+                    {isStaff && (
+                      <button onClick={() => onAddActivity(dateStr, "09:00")} className="p-1 rounded hover:bg-[#EFF1EF] text-[#8CA0AC] hover:text-[#1B2733]">
+                        <Plus size={isMobileLandscape ? 11 : 13} />
+                      </button>
+                    )}
+                  </div>
+                  {execTurno && (
+                    <div className="mt-1.5 flex items-center gap-1 min-w-0 overflow-hidden bg-[#FDF3E1] border border-[#F0D9A8] rounded px-1.5 py-1" title={`Turno de fin de semana — ${execTurno.gerencia}`}>
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#E8A33D] shrink-0" />
+                      <span className="text-[10px] font-medium text-[#8A6A2A] truncate min-w-0">Turno: {execTurno.name}</span>
+                    </div>
+                  )}
+                  {multidayActs.map(act => {
+                    const cat = categoryById(categories, act.categoryId);
+                    const color = cat ? cat.color : "#8CA0AC";
+                    const editable = canEditGerencia(act.gerencia);
+                    return (
+                      <div
+                        key={act.id}
+                        onClick={() => editable && onEditActivity({ ...act, occurrenceDate: dateStr, seriesId: act.id, originalDate: dateStr, isRecurring: false })}
+                        className={`mt-1.5 flex items-center gap-1 min-w-0 overflow-hidden rounded px-1.5 py-1 border ${editable ? "cursor-pointer" : ""}`}
+                        style={{ backgroundColor: color + "1A", borderColor: color + "55" }}
+                        title={`${act.title} · ${act.gerencia}${cat ? " · " + cat.name : ""}`}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                        <span className="text-[10px] font-medium truncate min-w-0" style={{ color }}>{act.title}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+
+            {/* columna de horas + columnas de días (misma grilla, misma fila lógica) */}
+            <div>
+              {slots.map((t, i) => (
+                <div key={t} className="border-r border-[#E3E7E5] text-right pr-1.5 text-[10px] font-mono2 text-[#9AA8AF]" style={{ height: rowH }}>
+                  {t.endsWith(":00") ? <span className="relative -top-1.5">{t}</span> : null}
+                </div>
+              ))}
+            </div>
+            {weekDays.map((d, colIdx) => {
+              const dateStr = fmtDate(d);
+              const dayActs = occurrences.filter(a => a.occurrenceDate === dateStr);
+              return (
+                <div key={colIdx} className="relative border-r border-[#E3E7E5] last:border-r-0" style={{ height: slots.length * rowH }}>
+                  {slots.map((t, i) => (
+                    <div
+                      key={t}
+                      onClick={() => isStaff && onAddActivity(dateStr, t)}
+                      className={`border-b border-[#EEF1F0] ${isStaff ? "hover:bg-[#F5F8F1] cursor-pointer" : ""} ${t.endsWith(":00") ? "border-t border-t-[#E3E7E5]" : ""}`}
+                      style={{ height: rowH }}
+                    />
+                  ))}
+                  {dayActs.map(act => {
+                    const startMin = timeToMinutes(act.start) - START_HOUR * 60;
+                    const endMin = timeToMinutes(act.end) - START_HOUR * 60;
+                    const top = (startMin / 30) * rowH;
+                    const height = Math.max(((endMin - startMin) / 30) * rowH - 2, rowH - 4);
+                    const cat = categoryById(categories, act.categoryId);
+                    const color = cat ? cat.color : "#8CA0AC";
+                    const editable = canEditGerencia(act.gerencia);
+                    return (
+                      <div
+                        key={act.seriesId + "-" + act.occurrenceDate}
+                        onClick={(e) => { e.stopPropagation(); if (editable) onEditActivity(act); }}
+                        className={`absolute left-0.5 right-0.5 rounded-[4px] px-1.5 py-0.5 overflow-hidden ${editable ? "cursor-pointer" : ""}`}
+                        style={{ top, height, backgroundColor: color + "1F", borderLeft: `3px solid ${color}` }}
+                        title={`${act.title} · ${act.start}-${act.end} · ${act.gerencia}${cat ? " · " + cat.name : ""}${act.isRecurring ? " · " + describeRecurrence(act.recurrence) : ""}`}
+                      >
+                        <div className="flex items-center gap-1 min-w-0" style={{ color }}>
+                          {act.isRecurring && <RefreshCw size={9} className="shrink-0" />}
+                          <span className="text-[10.5px] font-semibold leading-tight truncate min-w-0">{act.title}</span>
+                        </div>
+                        <div className="text-[9px] text-[#5B6B76] leading-tight font-mono2 truncate">{act.start}–{act.end} · {act.gerencia}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>
