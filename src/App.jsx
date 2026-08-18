@@ -921,7 +921,7 @@ function CalendarView({
 
       <div className="bg-white border border-[#E3E7E5] rounded-lg overflow-hidden">
         <div className={isMobileLandscape ? "max-h-[62vh] overflow-y-auto" : ""}>
-          <div className="grid" style={{ gridTemplateColumns: `${timeColW}px repeat(7, 1fr)` }}>
+          <div className="grid" style={{ gridTemplateColumns: `${timeColW}px repeat(7, minmax(0, 1fr))` }}>
             {/* fila de encabezado (sticky) */}
             <div className="sticky top-0 z-10 bg-white border-b border-r border-[#E3E7E5]" />
             {weekDays.map((d, i) => {
