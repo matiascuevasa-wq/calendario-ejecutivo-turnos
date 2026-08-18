@@ -930,8 +930,8 @@ function CalendarView({
             const execTurno = draw ? executives.find(e => e.id === draw.executiveId) : null;
             const multidayActs = activities.filter(a => a.kind === "multiday" && a.dates && a.dates.includes(dateStr));
             return (
-              <div key={i} className={`border-b border-r border-[#E3E7E5] last:border-r-0 ${isMobileLandscape ? "px-1 py-1" : "px-2 py-2"} ${isToday ? "bg-[#FDF6E9]" : ""}`}>
-                <div className="flex items-center justify-between">
+              <div key={i} className={`border-b border-r border-[#E3E7E5] last:border-r-0 ${isMobileLandscape ? "px-1 py-1" : "px-1.5 py-2"} ${isToday ? "bg-[#FDF6E9]" : ""}`}>
+                <div className="flex items-center justify-between px-0.5">
                   <div>
                     <div className={`${isMobileLandscape ? "text-[9px]" : "text-[10px]"} font-semibold text-[#8CA0AC] tracking-wide`}>{WEEKDAYS_SHORT[i]}</div>
                     <div className={`${isMobileLandscape ? "text-[12px]" : "text-[15px]"} font-display font-semibold ${isToday ? "text-[#B0562F]" : "text-[#1B2733]"}`}>{d.getDate()}</div>
@@ -943,9 +943,9 @@ function CalendarView({
                   )}
                 </div>
                 {execTurno && (
-                  <div className="mt-1.5 flex items-center gap-1 bg-[#FDF3E1] border border-[#F0D9A8] rounded px-1.5 py-1" title={`Turno de fin de semana — ${execTurno.gerencia}`}>
+                  <div className="mt-1.5 flex items-center gap-1 min-w-0 overflow-hidden bg-[#FDF3E1] border border-[#F0D9A8] rounded px-1.5 py-1" title={`Turno de fin de semana — ${execTurno.gerencia}`}>
                     <span className="w-1.5 h-1.5 rounded-full bg-[#E8A33D] shrink-0" />
-                    <span className="text-[10px] font-medium text-[#8A6A2A] truncate">Turno: {execTurno.name}</span>
+                    <span className="text-[10px] font-medium text-[#8A6A2A] truncate min-w-0">Turno: {execTurno.name}</span>
                   </div>
                 )}
                 {multidayActs.map(act => {
@@ -956,12 +956,12 @@ function CalendarView({
                     <div
                       key={act.id}
                       onClick={() => editable && onEditActivity({ ...act, occurrenceDate: dateStr, seriesId: act.id, originalDate: dateStr, isRecurring: false })}
-                      className={`mt-1.5 flex items-center gap-1 rounded px-1.5 py-1 border ${editable ? "cursor-pointer" : ""}`}
+                      className={`mt-1.5 flex items-center gap-1 min-w-0 overflow-hidden rounded px-1.5 py-1 border ${editable ? "cursor-pointer" : ""}`}
                       style={{ backgroundColor: color + "1A", borderColor: color + "55" }}
                       title={`${act.title} · ${act.gerencia}${cat ? " · " + cat.name : ""}`}
                     >
                       <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
-                      <span className="text-[10px] font-medium truncate" style={{ color }}>{act.title}</span>
+                      <span className="text-[10px] font-medium truncate min-w-0" style={{ color }}>{act.title}</span>
                     </div>
                   );
                 })}
@@ -1009,9 +1009,9 @@ function CalendarView({
                       style={{ top, height, backgroundColor: color + "1F", borderLeft: `3px solid ${color}` }}
                       title={`${act.title} · ${act.start}-${act.end} · ${act.gerencia}${cat ? " · " + cat.name : ""}${act.isRecurring ? " · " + describeRecurrence(act.recurrence) : ""}`}
                     >
-                      <div className="text-[10.5px] font-semibold leading-tight truncate flex items-center gap-1" style={{ color }}>
+                      <div className="flex items-center gap-1 min-w-0" style={{ color }}>
                         {act.isRecurring && <RefreshCw size={9} className="shrink-0" />}
-                        {act.title}
+                        <span className="text-[10.5px] font-semibold leading-tight truncate min-w-0">{act.title}</span>
                       </div>
                       <div className="text-[9px] text-[#5B6B76] leading-tight font-mono2 truncate">{act.start}–{act.end} · {act.gerencia}</div>
                     </div>
